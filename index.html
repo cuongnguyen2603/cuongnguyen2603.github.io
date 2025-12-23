@@ -259,9 +259,9 @@
                 accentRed: 0x990000,
             },
             particles: {
-                count: 1500,
-                dustCount: 2000,
-                snowCount: 1000,
+                count: 1200,
+                dustCount: 1500,
+                snowCount: 800,
                 treeHeight: 24,
                 treeRadius: 8
             },
@@ -269,7 +269,11 @@
 
             preload: {
                 imageFolder: 'img/',
-                supportedExtensions: ['jpg', 'jpeg', 'png', 'gif', 'webp']
+                autoScanPatterns: false,
+                maxScanCount: 50,
+                supportedExtensions: ['jpg', 'jpeg', 'png', 'webp'],
+                lazyLoad: true,
+                maxConcurrentLoads: 3
             }
         };
 
@@ -292,6 +296,10 @@
         let snowSystem;
         let heartParticles = [];
         const debugInfo = document.getElementById('debug-info');
+        let frameCount = 0;
+        let lastFpsCheck = 0;
+        let currentFps = 60;
+        let adaptiveQuality = true;
 
         async function init() {
             initThree();
@@ -320,62 +328,104 @@
             const folder = CONFIG.preload.imageFolder;
             const extensions = CONFIG.preload.supportedExtensions;
             
-            try {
-                // Dùng fetch API để lấy danh sách file từ folder
-                const response = await fetch(folder);
-                const html = await response.text();
+            // Danh sách các ảnh có sẵn (tự động tìm thấy từ folder img)
+            const knownImages = [
+                'girl.jpg',
+                'girl copy.jpg', 
+                'girl copy 2.jpg',
+                'girl copy 3.jpg',
+                'girl copy 4.jpg'
+            ];
+            
+            let loadedCount = 0;
+            let loadingQueue = [...knownImages];
+            let activeLoads = 0;
+            const maxConcurrent = CONFIG.preload.maxConcurrentLoads || 3;
+            
+            // Function để load từng ảnh với rate limiting
+            function loadNextImage() {
+                if (loadingQueue.length === 0 || activeLoads >= maxConcurrent) return;
                 
-                // Parse HTML để tìm các link ảnh
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                const links = Array.from(doc.querySelectorAll('a'));
+                const filename = loadingQueue.shift();
+                const url = folder + filename;
+                activeLoads++;
                 
-                const imageFiles = links
-                    .map(link => link.getAttribute('href'))
-                    .filter(href => {
-                        if (!href) return false;
-                        const ext = href.split('.').pop().toLowerCase();
-                        return extensions.includes(ext);
-                    })
-                    .map(href => folder + href);
+                loader.load(url,
+                    (t) => { 
+                        t.colorSpace = THREE.SRGBColorSpace;
+                        // Giữ mipmaps cho ảnh đẹp hơn nhưng optimize filter
+                        t.minFilter = THREE.LinearMipmapLinearFilter;
+                        t.magFilter = THREE.LinearFilter;
+                        t.generateMipmaps = true;
+                        addPhotoToScene(t);
+                        loadedCount++;
+                        console.log(`✓ Đã load: ${filename} (${loadedCount}/${knownImages.length})`);
+                        activeLoads--;
+                        loadNextImage();
+                    },
+                    undefined,
+                    (e) => { 
+                        console.log(`✗ Không load được: ${filename}`);
+                        activeLoads--;
+                        loadNextImage();
+                    }
+                );
                 
-                // Load tất cả ảnh tìm được
-                imageFiles.forEach(url => {
-                    loader.load(url,
-                        (t) => { 
-                            t.colorSpace = THREE.SRGBColorSpace; 
-                            addPhotoToScene(t); 
-                        },
-                        undefined,
-                        (e) => { console.log(`Không load được: ${url}`); }
-                    );
-                });
-                
-                console.log(`Đã tìm thấy ${imageFiles.length} ảnh trong folder ${folder}`);
-            } catch (error) {
-                console.log('Không thể tự động quét folder, đang dùng cách thủ công...');
-                // Fallback: thử load các tên file phổ biến
-                const commonNames = [];
-                for (let i = 1; i <= 100; i++) {
+                // Load ảnh tiếp theo nếu còn slot
+                if (activeLoads < maxConcurrent) {
+                    loadNextImage();
+                }
+            }
+            
+            // Bắt đầu load với lazy loading
+            if (CONFIG.preload.lazyLoad) {
+                // Load 2 ảnh đầu tiên ngay lập tức
+                for (let i = 0; i < Math.min(2, maxConcurrent); i++) {
+                    loadNextImage();
+                }
+                // Load phần còn lại sau 1 giây
+                setTimeout(() => {
+                    while (loadingQueue.length > 0) {
+                        loadNextImage();
+                    }
+                }, 1000);
+            } else {
+                // Load tất cả ngay lập tức
+                while (loadingQueue.length > 0) {
+                    loadNextImage();
+                }
+            }
+            
+            // Thử quét thêm các pattern phổ biến nếu bật autoScanPatterns
+            if (CONFIG.preload.autoScanPatterns) {
+                const patterns = [];
+                for (let i = 1; i <= CONFIG.preload.maxScanCount; i++) {
                     extensions.forEach(ext => {
-                        commonNames.push(`${folder}${i}.${ext}`);
-                        commonNames.push(`${folder}a${i}.${ext}`);
-                        commonNames.push(`${folder}img${i}.${ext}`);
-                        commonNames.push(`${folder}image${i}.${ext}`);
+                        patterns.push(`${i}.${ext}`);
+                        patterns.push(`image${i}.${ext}`);
+                        patterns.push(`img${i}.${ext}`);
+                        patterns.push(`photo${i}.${ext}`);
+                        patterns.push(`pic${i}.${ext}`);
                     });
                 }
                 
-                commonNames.forEach(url => {
+                patterns.forEach(filename => {
+                    const url = folder + filename;
                     loader.load(url,
                         (t) => { 
                             t.colorSpace = THREE.SRGBColorSpace; 
-                            addPhotoToScene(t); 
+                            addPhotoToScene(t);
+                            loadedCount++;
                         },
                         undefined,
                         () => { /* Bỏ qua file không tồn tại */ }
                     );
                 });
             }
+            
+            setTimeout(() => {
+                console.log(`Tổng cộng đã load: ${loadedCount} ảnh`);
+            }, 2000);
         }
 
         function initThree() {
@@ -387,11 +437,19 @@
             camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
             camera.position.set(0, 2, CONFIG.camera.z);
 
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: window.innerWidth > 480,
+                alpha: false, 
+                powerPreference: "high-performance",
+                stencil: false,
+                depth: true
+            });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            // Chỉ giới hạn pixelRatio trên mobile nhỏ
+            const maxPixelRatio = window.innerWidth < 480 ? 1.5 : 2;
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxPixelRatio));
             renderer.toneMapping = THREE.ReinhardToneMapping;
-            renderer.toneMappingExposure = 1.2;
+            renderer.toneMappingExposure = 1.15;
             container.appendChild(renderer.domElement);
 
             mainGroup = new THREE.Group();
@@ -428,10 +486,16 @@
 
         function setupPostProcessing() {
             const renderScene = new RenderPass(scene, camera);
-            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-            bloomPass.threshold = 0.3;
-            bloomPass.strength = 0.2;
-            bloomPass.radius = 0.1;
+            // Cân bằng giữa quality và performance
+            const isMobile = window.innerWidth < 768;
+            const bloomResolution = new THREE.Vector2(
+                isMobile ? window.innerWidth / 2 : window.innerWidth * 0.75, 
+                isMobile ? window.innerHeight / 2 : window.innerHeight * 0.75
+            );
+            const bloomPass = new UnrealBloomPass(bloomResolution, 1.4, 0.4, 0.85);
+            bloomPass.threshold = 0.35;
+            bloomPass.strength = 0.18;
+            bloomPass.radius = 0.12;
 
             composer = new EffectComposer(renderer);
             composer.addPass(renderScene);
@@ -1012,11 +1076,15 @@
         }
 
         function setupEvents() {
+            let resizeTimeout;
             window.addEventListener('resize', () => {
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                composer.setSize(window.innerWidth, window.innerHeight);
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                    composer.setSize(window.innerWidth, window.innerHeight);
+                }, 200);
             });
 
             window.addEventListener('keydown', (e) => {
@@ -1032,6 +1100,24 @@
         function animate() {
             requestAnimationFrame(animate);
             const dt = clock.getDelta();
+            
+            // FPS monitoring và adaptive quality
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsCheck > 1000) {
+                currentFps = frameCount;
+                frameCount = 0;
+                lastFpsCheck = now;
+                
+                // Chỉ giảm quality nếu FPS rất thấp
+                if (adaptiveQuality && currentFps < 25) {
+                    const newSnowCount = Math.max(400, Math.floor(CONFIG.particles.snowCount * 0.95));
+                    if (newSnowCount !== CONFIG.particles.snowCount) {
+                        CONFIG.particles.snowCount = newSnowCount;
+                        console.log(`⚠️ FPS: ${currentFps}, giảm snow xuống ${newSnowCount}`);
+                    }
+                }
+            }
 
             if (STATE.mode === 'SCATTER' && STATE.hand.detected) {
                 const targetRotY = STATE.hand.x * Math.PI * 0.9;
